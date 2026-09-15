@@ -26,7 +26,6 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
-#include <stdint.h>
 #include <ogg/ogg.h>
 
 /* A complete description of Ogg framing exists in docs/framing.html */
@@ -273,6 +272,26 @@ void ogg_page_checksum_set(ogg_page *og){
   }
 }
 
+static int _os_body_alias(ogg_stream_state *os,const void *ptr,long *offset){
+#ifdef UINTPTR_MAX
+  uintptr_t source=(uintptr_t)ptr;
+  uintptr_t buffer=(uintptr_t)os->body_data;
+  if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
+    if(offset)*offset=(long)(source-buffer);
+    return 1;
+  }
+  if(offset)*offset=0;
+  return 0;
+#else
+  /* Legacy targets may not provide uintptr_t.  Snapshot conservatively
+     instead of relying on undefined ordering between unrelated pointers. */
+  (void)os;
+  (void)ptr;
+  if(offset)*offset=0;
+  return 1;
+#endif
+}
+
 /* submit data to the internal buffer of the framing engine */
 int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
                        long e_o_s, ogg_int64_t granulepos){
@@ -285,23 +304,15 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
   if(ogg_stream_check(os)) return -1;
   if(!iov) return 0;
 
-  if(count>0){
-    uintptr_t source=(uintptr_t)iov;
-    uintptr_t buffer=(uintptr_t)os->body_data;
-    if(source>=buffer && source-buffer<(uintptr_t)os->body_storage)
-      aliases_body=1;
-  }
+  if(count>0 && _os_body_alias(os,iov,NULL))
+    aliases_body=1;
 
   for (i = 0; i < count; ++i){
     if(iov[i].iov_len>LONG_MAX) return -1;
     if(bytes>LONG_MAX-(long)iov[i].iov_len) return -1;
     bytes += (long)iov[i].iov_len;
-    if(iov[i].iov_len){
-      uintptr_t source=(uintptr_t)iov[i].iov_base;
-      uintptr_t buffer=(uintptr_t)os->body_data;
-      if(source>=buffer && source-buffer<(uintptr_t)os->body_storage)
-        aliases_body=1;
-    }
+    if(iov[i].iov_len && _os_body_alias(os,iov[i].iov_base,NULL))
+      aliases_body=1;
   }
   lacing_vals=bytes/255+1;
 
@@ -827,11 +838,10 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   if(ogg_stream_check(os)) return -1;
 
   {
-    uintptr_t source=(uintptr_t)header;
-    uintptr_t buffer=(uintptr_t)os->body_data;
+    long header_offset=0;
     size_t headerbytes=(size_t)segments+27;
-    if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
-      if(headerbytes>(size_t)os->body_storage-(size_t)(source-buffer))
+    if(_os_body_alias(os,header,&header_offset)){
+      if(headerbytes>(size_t)os->body_storage-(size_t)header_offset)
         return -1;
       header_copy=_ogg_malloc(headerbytes);
       if(!header_copy) return -1;
@@ -840,18 +850,14 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
     }
   }
 
-  if(bodysize>0){
-    uintptr_t source=(uintptr_t)body;
-    uintptr_t buffer=(uintptr_t)os->body_data;
-    if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
-      body_copy=_ogg_malloc(bodysize);
-      if(!body_copy){
-        if(header_copy)_ogg_free(header_copy);
-        return -1;
-      }
-      memcpy(body_copy,body,bodysize);
-      body=body_copy;
+  if(bodysize>0 && _os_body_alias(os,body,NULL)){
+    body_copy=_ogg_malloc(bodysize);
+    if(!body_copy){
+      if(header_copy)_ogg_free(header_copy);
+      return -1;
     }
+    memcpy(body_copy,body,bodysize);
+    body=body_copy;
   }
 
   /* clean up 'returned data' */
