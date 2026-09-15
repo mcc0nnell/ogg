@@ -285,6 +285,13 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
   if(ogg_stream_check(os)) return -1;
   if(!iov) return 0;
 
+  if(count>0){
+    uintptr_t source=(uintptr_t)iov;
+    uintptr_t buffer=(uintptr_t)os->body_data;
+    if(source>=buffer && source-buffer<(uintptr_t)os->body_storage)
+      aliases_body=1;
+  }
+
   for (i = 0; i < count; ++i){
     if(iov[i].iov_len>LONG_MAX) return -1;
     if(bytes>LONG_MAX-(long)iov[i].iov_len) return -1;
@@ -298,7 +305,7 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
   }
   lacing_vals=bytes/255+1;
 
-  if(aliases_body){
+  if(aliases_body && bytes){
     unsigned char *p;
     alias_copy=_ogg_malloc(bytes);
     if(!alias_copy) return -1;
@@ -332,10 +339,10 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
      will actually be fairly easy to eliminate the extra copy in the
      future */
 
-  if(alias_copy){
-    memcpy(os->body_data+os->body_fill,alias_copy,bytes);
+  if(aliases_body){
+    if(bytes)memcpy(os->body_data+os->body_fill,alias_copy,bytes);
     os->body_fill+=bytes;
-    _ogg_free(alias_copy);
+    if(alias_copy)_ogg_free(alias_copy);
   }else{
     for (i = 0; i < count; ++i) {
       memcpy(os->body_data+os->body_fill, iov[i].iov_base, iov[i].iov_len);
@@ -803,6 +810,7 @@ int ogg_sync_pageout(ogg_sync_state *oy, ogg_page *og){
 int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   unsigned char *header=og->header;
   unsigned char *body=og->body;
+  unsigned char *header_copy=NULL;
   unsigned char *body_copy=NULL;
   long           bodysize=og->body_len;
   int            segptr=0;
@@ -818,12 +826,29 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
 
   if(ogg_stream_check(os)) return -1;
 
+  {
+    uintptr_t source=(uintptr_t)header;
+    uintptr_t buffer=(uintptr_t)os->body_data;
+    size_t headerbytes=(size_t)segments+27;
+    if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
+      if(headerbytes>(size_t)os->body_storage-(size_t)(source-buffer))
+        return -1;
+      header_copy=_ogg_malloc(headerbytes);
+      if(!header_copy) return -1;
+      memcpy(header_copy,header,headerbytes);
+      header=header_copy;
+    }
+  }
+
   if(bodysize>0){
     uintptr_t source=(uintptr_t)body;
     uintptr_t buffer=(uintptr_t)os->body_data;
     if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
       body_copy=_ogg_malloc(bodysize);
-      if(!body_copy) return -1;
+      if(!body_copy){
+        if(header_copy)_ogg_free(header_copy);
+        return -1;
+      }
       memcpy(body_copy,body,bodysize);
       body=body_copy;
     }
@@ -858,15 +883,18 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
 
   /* check the serial number */
   if(serialno!=os->serialno){
+    if(header_copy)_ogg_free(header_copy);
     if(body_copy)_ogg_free(body_copy);
     return(-1);
   }
   if(version>0){
+    if(header_copy)_ogg_free(header_copy);
     if(body_copy)_ogg_free(body_copy);
     return(-1);
   }
 
   if(_os_lacing_expand(os,segments+1)){
+    if(header_copy)_ogg_free(header_copy);
     if(body_copy)_ogg_free(body_copy);
     return -1;
   }
@@ -908,6 +936,7 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
 
   if(bodysize){
     if(_os_body_expand(os,bodysize)){
+      if(header_copy)_ogg_free(header_copy);
       if(body_copy)_ogg_free(body_copy);
       return -1;
     }
@@ -942,6 +971,7 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
     }
 
   }
+  if(header_copy)_ogg_free(header_copy);
 
   if(eos){
     os->e_o_s=1;
@@ -1759,6 +1789,30 @@ int main(void){
 
   {
     ogg_stream_state self;
+    ogg_iovec_t *iov;
+    unsigned char *payload;
+    long storage;
+    long i;
+
+    if(ogg_stream_init(&self,1)) error();
+    storage=self.body_storage;
+    payload=_ogg_malloc(storage);
+    if(!payload) error();
+    for(i=0;i<storage;i++)
+      payload[i]=(unsigned char)(i*7+3);
+    iov=(ogg_iovec_t *)self.body_data;
+    iov[0].iov_base=payload;
+    iov[0].iov_len=storage;
+    if(ogg_stream_iovecin(&self,iov,1,0,0)) error();
+    if(self.body_fill!=storage) error();
+    for(i=0;i<storage;i++)
+      if(self.body_data[i]!=(unsigned char)(i*7+3)) error();
+    _ogg_free(payload);
+    ogg_stream_clear(&self);
+  }
+
+  {
+    ogg_stream_state self;
     ogg_page page;
     unsigned char header[27+65];
     long storage;
@@ -1781,6 +1835,38 @@ int main(void){
     if(self.body_fill!=storage) error();
     for(i=0;i<storage;i++)
       if(self.body_data[i]!=0x4d) error();
+    ogg_stream_clear(&self);
+  }
+
+  {
+    ogg_stream_state self;
+    ogg_page page;
+    unsigned char *body;
+    unsigned char *header;
+    long storage;
+    int i;
+
+    if(ogg_stream_init(&self,1)) error();
+    storage=self.body_storage;
+    body=_ogg_malloc(storage);
+    if(!body) error();
+    memset(body,0x6b,storage);
+    header=self.body_data;
+    memset(header,0,27+65);
+    memcpy(header,"OggS",4);
+    header[14]=1;
+    header[26]=65;
+    for(i=0;i<64;i++) header[27+i]=255;
+    header[27+64]=64;
+    page.header=header;
+    page.header_len=27+65;
+    page.body=body;
+    page.body_len=storage;
+    if(ogg_stream_pagein(&self,&page)) error();
+    if(self.body_fill!=storage) error();
+    for(i=0;i<storage;i++)
+      if(self.body_data[i]!=0x6b) error();
+    _ogg_free(body);
     ogg_stream_clear(&self);
   }
 
