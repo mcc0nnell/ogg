@@ -439,7 +439,8 @@ static int ogg_stream_flush_i(ogg_stream_state *os,ogg_page *og, int force, int 
                                      encode stream, but it has
                                      plausible uses */
   {
-    long pageno=os->pageno++;
+    ogg_uint32_t pageno=(ogg_uint32_t)os->pageno;
+    os->pageno=(long)(pageno+1U);
     for(i=18;i<22;i++){
       os->header[i]=(unsigned char)(pageno&0xff);
       pageno>>=8;
@@ -784,7 +785,7 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   int eos=ogg_page_eos(og);
   ogg_int64_t granulepos=ogg_page_granulepos(og);
   int serialno=ogg_page_serialno(og);
-  long pageno=ogg_page_pageno(og);
+  ogg_uint32_t pageno=(ogg_uint32_t)ogg_page_pageno(og);
   int segments=header[26];
 
   if(ogg_stream_check(os)) return -1;
@@ -823,7 +824,7 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   if(_os_lacing_expand(os,segments+1)) return -1;
 
   /* are we in sequence? */
-  if(pageno!=os->pageno){
+  if(pageno!=(ogg_uint32_t)os->pageno){
     int i;
 
     /* unroll previous partial packet (if any) */
@@ -896,7 +897,7 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
       os->lacing_vals[os->lacing_fill-1]|=0x200;
   }
 
-  os->pageno=pageno+1;
+  os->pageno=(long)(pageno+1U);
 
   return(0);
 }
@@ -1684,6 +1685,29 @@ int main(void){
   ogg_stream_init(&os_en,0x04030201);
   ogg_stream_init(&os_de,0x04030201);
   ogg_sync_init(&oy);
+
+  {
+    unsigned char header[27]={0};
+    ogg_page page;
+
+    memset(&page,0,sizeof(page));
+    page.header=header;
+    page.header_len=sizeof(header);
+    header[14]=1;
+    header[15]=2;
+    header[16]=3;
+    header[17]=4;
+    header[18]=0xff;
+    header[19]=0xff;
+    header[20]=0xff;
+    header[21]=0xff;
+    os_de.pageno=(long)(ogg_uint32_t)0xffffffffU;
+    if(ogg_stream_pagein(&os_de,&page)) error();
+    memset(header+18,0,4);
+    if(ogg_stream_pagein(&os_de,&page)) error();
+    if(ogg_stream_packetout(&os_de,NULL)) error();
+    ogg_stream_reset(&os_de);
+  }
 
   /* Exercise each code path in the framing code.  Also verify that
      the checksums are working.  */
