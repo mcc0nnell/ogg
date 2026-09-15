@@ -360,14 +360,16 @@ long oggpackB_look1(oggpack_buffer *b){
 }
 
 void oggpack_adv(oggpack_buffer *b,int bits){
-  if(bits<0 || bits>INT_MAX-b->endbit) goto overflow;
-  bits+=b->endbit;
+  ogg_int64_t advance;
 
-  if(b->endbyte > b->storage-((bits+7)>>3)) goto overflow;
+  if(bits<0) goto overflow;
+  advance=(ogg_int64_t)bits+b->endbit;
 
-  b->ptr+=bits/8;
-  b->endbyte+=bits/8;
-  b->endbit=bits&7;
+  if(b->endbyte > b->storage-((advance+7)>>3)) goto overflow;
+
+  b->ptr+=advance/8;
+  b->endbyte+=advance/8;
+  b->endbit=(int)(advance&7);
   return;
 
  overflow:
@@ -862,6 +864,18 @@ void invalidcounttest(int msb){
     oggpack_adv(&read,-8);
   if((msb ? oggpackB_look1(&read) : oggpack_look1(&read))!=-1)
     report("negative advance did not fail!\n");
+
+  if(msb)
+    oggpackB_readinit(&read,&source,1);
+  else
+    oggpack_readinit(&read,&source,1);
+  read.endbit=7;
+  if(msb)
+    oggpackB_adv(&read,INT_MAX-7);
+  else
+    oggpack_adv(&read,INT_MAX-7);
+  if((msb ? oggpackB_look1(&read) : oggpack_look1(&read))!=-1)
+    report("large advance did not fail!\n");
 }
 
 int main(void){
