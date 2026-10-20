@@ -292,8 +292,11 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
     if(iov[i].iov_len){
       uintptr_t source=(uintptr_t)iov[i].iov_base;
       uintptr_t buffer=(uintptr_t)os->body_data;
-      if(source>=buffer && source-buffer<(uintptr_t)os->body_storage)
+      if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
+        if(iov[i].iov_len>(size_t)(os->body_storage-(long)(source-buffer)))
+          return -1;
         aliases_body=1;
+      }
     }
   }
   lacing_vals=bytes/255+1;
@@ -822,6 +825,7 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
     uintptr_t source=(uintptr_t)body;
     uintptr_t buffer=(uintptr_t)os->body_data;
     if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
+      if(bodysize>os->body_storage-(long)(source-buffer)) return -1;
       body_copy=_ogg_malloc(bodysize);
       if(!body_copy) return -1;
       memcpy(body_copy,body,bodysize);
@@ -1748,6 +1752,10 @@ int main(void){
     storage=self.body_storage;
     for(i=0;i<storage;i++)
       self.body_data[i]=(unsigned char)(i*13+5);
+    iov.iov_base=self.body_data+storage-1;
+    iov.iov_len=2;
+    if(ogg_stream_iovecin(&self,&iov,1,0,0)!=-1) error();
+    if(self.body_fill!=0) error();
     iov.iov_base=self.body_data;
     iov.iov_len=storage;
     if(ogg_stream_iovecin(&self,&iov,1,0,0)) error();
@@ -1775,6 +1783,10 @@ int main(void){
     header[27+64]=64;
     page.header=header;
     page.header_len=sizeof(header);
+    page.body=self.body_data+storage-1;
+    page.body_len=storage;
+    if(ogg_stream_pagein(&self,&page)!=-1) error();
+    if(self.body_fill!=0) error();
     page.body=self.body_data;
     page.body_len=storage;
     if(ogg_stream_pagein(&self,&page)) error();
