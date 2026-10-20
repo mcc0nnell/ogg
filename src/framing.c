@@ -269,6 +269,10 @@ void ogg_page_checksum_set(ogg_page *og){
   if(og){
     ogg_uint32_t crc_reg=0;
 
+    if(!og->header || og->header_len<27 || og->header_len>INT_MAX ||
+       og->body_len<0 || og->body_len>INT_MAX ||
+       (og->body_len && !og->body)) return;
+
     /* safety; needed for API behavior, but not framing code */
     og->header[22]=0;
     og->header[23]=0;
@@ -1836,6 +1840,21 @@ int main(void){
   fprintf(stderr,"testing page number rollover... ");
   pageno_rollover_test();
   fprintf(stderr,"ok.\n");
+  {
+    unsigned char checksum_header[27]={0};
+    ogg_page checksum_page;
+    memset(&checksum_page,0,sizeof(checksum_page));
+    checksum_page.header=checksum_header;
+    checksum_header[22]=0x7f;
+    checksum_page.header_len=-1;
+    ogg_page_checksum_set(&checksum_page);
+    if(checksum_header[22]!=0x7f) error();
+#if LONG_MAX > INT_MAX
+    checksum_page.header_len=(long)INT_MAX+1;
+    ogg_page_checksum_set(&checksum_page);
+    if(checksum_header[22]!=0x7f) error();
+#endif
+  }
 
   /* Exercise each code path in the framing code.  Also verify that
      the checksums are working.  */
