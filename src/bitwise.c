@@ -996,20 +996,24 @@ int main(void){
     oggpack_write(&t,0xaa,8);
     oggpack_writetrunc(&t,-8);
     if(oggpack_writecheck(&t)==0)report("negative writetrunc accepted!\n");
+    oggpack_writeclear(&t);
 
     oggpackB_writeinit(&t);
     oggpackB_write(&t,0xaa,8);
     oggpackB_writetrunc(&t,-8);
     if(oggpackB_writecheck(&t)==0)report("negative B writetrunc accepted!\n");
+    oggpack_writeclear(&t);
 
     oggpack_writeinit(&t);
     oggpack_writecopy(&t,source,-8);
     if(oggpack_writecheck(&t)==0)report("negative writecopy accepted!\n");
+    oggpack_writeclear(&t);
 
     oggpackB_writeinit(&t);
     oggpackB_write(&t,0x7f,7);
     oggpackB_writecopy(&t,source,LONG_MAX);
     if(oggpackB_writecheck(&t)==0)report("overflowing writecopy accepted!\n");
+    oggpack_writeclear(&t);
 
     oggpack_readinit(&t,source,sizeof(source));
     oggpack_adv(&t,-8);
