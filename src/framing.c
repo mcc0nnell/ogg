@@ -1716,9 +1716,35 @@ int main(void){
     if(ogg_stream_pagein(&os_de,&bad)!=-1)
       error();
 
-    bad.header_len=sizeof(header);
+    /* A declared segment must fit within the supplied header. */
+    bad.header_len=27;
     header[26]=1;
+    if(ogg_stream_pagein(&os_de,&bad)!=-1)
+      error();
+
+    bad.header_len=sizeof(header);
     header[27]=255;
+    bad.body_len=1;
+    if(ogg_stream_pagein(&os_de,&bad)!=-1)
+      error();
+
+    /* Reject both undersized and oversized bodies, not just overreads. */
+    header[27]=1;
+    bad.body_len=2;
+    if(ogg_stream_pagein(&os_de,&bad)!=-1)
+      error();
+
+    bad.body_len=-1;
+    if(ogg_stream_pagein(&os_de,&bad)!=-1)
+      error();
+
+    bad.body_len=1;
+    bad.body=NULL;
+    if(ogg_stream_pagein(&os_de,&bad)!=-1)
+      error();
+
+    bad.body=body;
+    bad.header=NULL;
     if(ogg_stream_pagein(&os_de,&bad)!=-1)
       error();
   }
