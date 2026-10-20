@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h>
+#include <stdint.h>
 #include <ogg/ogg.h>
 
 static long _os_pageno_from_u32(ogg_uint32_t pageno){
@@ -294,6 +295,8 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
                        long e_o_s, ogg_int64_t granulepos){
 
   long bytes = 0, lacing_vals;
+  unsigned char *alias_copy=NULL;
+  int aliases_body=0;
   int i;
 
   if(ogg_stream_check(os)) return -1;
@@ -303,8 +306,28 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
     if(iov[i].iov_len>LONG_MAX) return -1;
     if(bytes>LONG_MAX-(long)iov[i].iov_len) return -1;
     bytes += (long)iov[i].iov_len;
+    if(iov[i].iov_len){
+      uintptr_t source=(uintptr_t)iov[i].iov_base;
+      uintptr_t buffer=(uintptr_t)os->body_data;
+      if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
+        if(iov[i].iov_len>(size_t)(os->body_storage-(long)(source-buffer)))
+          return -1;
+        aliases_body=1;
+      }
+    }
   }
   lacing_vals=bytes/255+1;
+
+  if(aliases_body){
+    unsigned char *p;
+    alias_copy=_ogg_malloc(bytes);
+    if(!alias_copy) return -1;
+    p=alias_copy;
+    for(i=0;i<count;i++){
+      memcpy(p,iov[i].iov_base,iov[i].iov_len);
+      p+=iov[i].iov_len;
+    }
+  }
 
   if(os->body_returned){
     /* advance packet data according to the body_returned pointer. We
@@ -319,17 +342,25 @@ int ogg_stream_iovecin(ogg_stream_state *os, ogg_iovec_t *iov, int count,
   }
 
   /* make sure we have the buffer storage */
-  if(_os_body_expand(os,bytes) || _os_lacing_expand(os,lacing_vals))
+  if(_os_body_expand(os,bytes) || _os_lacing_expand(os,lacing_vals)){
+    if(alias_copy)_ogg_free(alias_copy);
     return -1;
+  }
 
   /* Copy in the submitted packet.  Yes, the copy is a waste; this is
      the liability of overly clean abstraction for the time being.  It
      will actually be fairly easy to eliminate the extra copy in the
      future */
 
-  for (i = 0; i < count; ++i) {
-    memcpy(os->body_data+os->body_fill, iov[i].iov_base, iov[i].iov_len);
-    os->body_fill += (long)iov[i].iov_len;
+  if(alias_copy){
+    memcpy(os->body_data+os->body_fill,alias_copy,bytes);
+    os->body_fill+=bytes;
+    _ogg_free(alias_copy);
+  }else{
+    for (i = 0; i < count; ++i) {
+      memcpy(os->body_data+os->body_fill, iov[i].iov_base, iov[i].iov_len);
+      os->body_fill += (long)iov[i].iov_len;
+    }
   }
 
   /* Store lacing vals for this packet */
@@ -790,6 +821,7 @@ int ogg_sync_pageout(ogg_sync_state *oy, ogg_page *og){
 int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   unsigned char *header;
   unsigned char *body;
+  unsigned char *body_copy=NULL;
   long bodysize;
   long expected_body=0;
   int segptr=0;
@@ -823,6 +855,18 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   serialno=ogg_page_serialno(og);
   pageno=_ogg_page_pageno_u32(og);
 
+  if(bodysize>0){
+    uintptr_t source=(uintptr_t)body;
+    uintptr_t buffer=(uintptr_t)os->body_data;
+    if(source>=buffer && source-buffer<(uintptr_t)os->body_storage){
+      if(bodysize>os->body_storage-(long)(source-buffer)) return -1;
+      body_copy=_ogg_malloc(bodysize);
+      if(!body_copy) return -1;
+      memcpy(body_copy,body,bodysize);
+      body=body_copy;
+    }
+  }
+
   /* clean up 'returned data' */
   {
     long lr=os->lacing_returned;
@@ -851,10 +895,19 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   }
 
   /* check the serial number */
-  if(serialno!=os->serialno)return(-1);
-  if(version>0)return(-1);
+  if(serialno!=os->serialno){
+    if(body_copy)_ogg_free(body_copy);
+    return(-1);
+  }
+  if(version>0){
+    if(body_copy)_ogg_free(body_copy);
+    return(-1);
+  }
 
-  if(_os_lacing_expand(os,segments+1)) return -1;
+  if(_os_lacing_expand(os,segments+1)){
+    if(body_copy)_ogg_free(body_copy);
+    return -1;
+  }
 
   /* are we in sequence? */
   if(pageno!=(ogg_uint32_t)os->pageno){
@@ -895,10 +948,14 @@ int ogg_stream_pagein(ogg_stream_state *os, ogg_page *og){
   }
 
   if(bodysize){
-    if(_os_body_expand(os,bodysize)) return -1;
+    if(_os_body_expand(os,bodysize)){
+      if(body_copy)_ogg_free(body_copy);
+      return -1;
+    }
     memcpy(os->body_data+os->body_fill,body,bodysize);
     os->body_fill+=bodysize;
   }
+  if(body_copy)_ogg_free(body_copy);
 
   {
     int saved=-1;
@@ -1854,6 +1911,58 @@ int main(void){
     ogg_page_checksum_set(&checksum_page);
     if(checksum_header[22]!=0x7f) error();
 #endif
+  {
+    ogg_stream_state self;
+    ogg_iovec_t iov;
+    long storage;
+    long i;
+
+    if(ogg_stream_init(&self,1)) error();
+    storage=self.body_storage;
+    for(i=0;i<storage;i++)
+      self.body_data[i]=(unsigned char)(i*13+5);
+    iov.iov_base=self.body_data+storage-1;
+    iov.iov_len=2;
+    if(ogg_stream_iovecin(&self,&iov,1,0,0)!=-1) error();
+    if(self.body_fill!=0) error();
+    iov.iov_base=self.body_data;
+    iov.iov_len=storage;
+    if(ogg_stream_iovecin(&self,&iov,1,0,0)) error();
+    if(self.body_fill!=storage) error();
+    for(i=0;i<storage;i++)
+      if(self.body_data[i]!=(unsigned char)(i*13+5)) error();
+    ogg_stream_clear(&self);
+  }
+
+  {
+    ogg_stream_state self;
+    ogg_page page;
+    unsigned char header[27+65];
+    long storage;
+    int i;
+
+    if(ogg_stream_init(&self,1)) error();
+    storage=self.body_storage;
+    memset(header,0,sizeof(header));
+    memset(self.body_data,0x4d,storage);
+    memcpy(header,"OggS",4);
+    header[14]=1;
+    header[26]=65;
+    for(i=0;i<64;i++) header[27+i]=255;
+    header[27+64]=64;
+    page.header=header;
+    page.header_len=sizeof(header);
+    page.body=self.body_data+storage-1;
+    page.body_len=storage;
+    if(ogg_stream_pagein(&self,&page)!=-1) error();
+    if(self.body_fill!=0) error();
+    page.body=self.body_data;
+    page.body_len=storage;
+    if(ogg_stream_pagein(&self,&page)) error();
+    if(self.body_fill!=storage) error();
+    for(i=0;i<storage;i++)
+      if(self.body_data[i]!=0x4d) error();
+    ogg_stream_clear(&self);
   }
 
   /* Exercise each code path in the framing code.  Also verify that
