@@ -1965,6 +1965,8 @@ int main(void){
     ogg_stream_clear(&self);
   }
 
+  }
+
   /* Exercise each code path in the framing code.  Also verify that
      the checksums are working.  */
 
